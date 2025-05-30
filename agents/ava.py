@@ -11,7 +11,7 @@ from tools.faq_tool import FAQ_TOOL, lookup_faq
 
 # ── OpenAI client & model ────────────────────────────────────────────────
 client = openai.OpenAI()             # uses OPENAI_API_KEY env var
-MODEL  = "o4-mini"                   # change if you use a different model
+MODEL  = "gpt-4o"                   # change if you use a different model
 
 # ── Your full YAML / story prompt (with branching logic) ─────────────────
 SYSTEM_INSTRUCTIONS = """
@@ -52,26 +52,26 @@ start:
 greet:
   ai: |
     Hi, my name is Ava and I'm a leasing agent here at Grand Oaks.
-    I'd love to help you find your next apartment! What's your name?
+    I'd love to help you find your next apartment! What's your full name?
   await: prospect_name
   → initial_qualification
 
 initial_qualification:
   ai:
     - "Great, {{prospect_name}}!"
-    - "What size apartment are you looking for?" [1 BR | 2 BR | 3 BR]
+    - "What bedroom size are you looking for?" [1 BR | 2 BR | 3 BR]
   await: desired_bedrooms
   then:
     ai: |
-      And when are you planning to move?
+      And what is your move-in date?
       <calendar date‑picker appears>
   await: move_in_date
   → primary_menu
 
 primary_menu:
   ai: |
-    How can I best help you today?
-    [ Ask Questions ] [ Schedule Tour ] [ Get Pre‑Qualified ] [ Apply Now ]
+    What is your next action?
+    [ Ask Some Questions ] [ Schedule A Tour ] [ Get Pre‑Qualified ] [ Apply Now ]
   await: next_action
   branches:
     faq   → faq_intro
@@ -104,7 +104,7 @@ faq_answer:
 # ---------- VALUE PROPOSITION ----------
 value_prop_offer:
   ai: |
-    Want to save **$25** off your application fee by answering a few easy
+    Want to save $25 off your application fee by answering a few easy
     questions?
     [ Sure! ] [ No thanks ]
   await: value_prop_choice
@@ -118,7 +118,7 @@ lifestyle_questions:
   sequence:
     - prompt: "What's bringing you to the area?"
       slot:   reason_for_move
-    - prompt: "Where will you be working?"
+    - prompt: "Where is your work place?"
       slot:   employer
     - prompt: "Do you have a price range in mind?"
       slot:   price_range
@@ -153,9 +153,9 @@ pq_success:
   → tour_offer
 
 # ---------- TOUR SCHEDULING ----------
-tour_offer:
+tour_start:
   ai: |
-    Let's schedule a tour now!
+    Do you prefer an in-person tour with one of our Leasing Professionals, a self-guided tour on site, or a virtual tour with an agent?
     [ Sure! ] [ No thanks ]
   if yes:  → tour_type
   else:    → close_or_menu
@@ -177,7 +177,7 @@ tour_type:
 pq_reoffer_if_needed:
   if pq_status != completed:
     ai: |
-      Want to lock in an extra **$50 off** your first month's rent by
+      Want to lock in an extra $50 off your first month's rent by
       getting Pre‑Qualified now?
       [ Yes ] [ Maybe later ]
   → closing
@@ -251,7 +251,7 @@ Your job then is to:
 Always use whatever the prospect said *and* whatever is in `helper_data` to decide the very next prompt
 
 
-These are instructions for how you should behave. Start at the top of the story. Call the FAQ API Tool when prompted with any FAQ. Remember to not ask for questions that are already answered.
+These are instructions for how you should behave. Start at the top of the story. Remember to not ask for questions that are already answered. Ask question using the exactly same questions I gave you in the workflow.
  with HELPERSYNC and branching logic >>
 """
 
@@ -268,12 +268,16 @@ def _safe_load_json(blob: str) -> dict:
         return {}
 
 # ── Main callable for each turn (used by main.py) ────────────────────────
-def process_turn(user_message: str, helper_data: dict) -> str:
+def process_turn(user_message: str, helper_data: dict, faq: bool) -> str:
+  
     """
     • helper_data : slot dict from Helper agent
     • Returns     : Ava's reply text
     """
-
+    if faq:
+        answer = lookup_faq(user_message)
+        return answer
+    
     messages = [
         {"role": "system", "content": SYSTEM_INSTRUCTIONS},
         {"role": "system", "content": f"HELPER_DATA:\n{json.dumps(helper_data)}"},
@@ -283,29 +287,13 @@ def process_turn(user_message: str, helper_data: dict) -> str:
     rsp = client.chat.completions.create(
         model       = MODEL,
         messages    = messages,
-        tools       = [FAQ_TOOL],
-        tool_choice = "auto"
+        temperature = 0.2 # lower temp for more deterministic replies
+        # tools       = [FAQ_TOOL],
+        # tool_choice = "auto"
     )
     msg = rsp.choices[0].message
 
-    # ── If Ava triggered lookup_faq ───────────────────────────────────────
-    if msg.tool_calls:
-        for call in msg.tool_calls:
-            if call.function.name == "lookup_faq":
-                question = json.loads(call.function.arguments)["query"]
-                answer   = lookup_faq(question)
-
-                # Feed answer back so the model can finish the reply
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": answer
-                })
-                rsp2 = client.chat.completions.create(
-                    model=MODEL,
-                    messages=messages
-                )
-                return rsp2.choices[0].message.content
+    print('msg', msg)
 
     # ── Otherwise plain text reply (unwrap if model sent JSON) ────────────
     if msg.content and msg.content.strip().startswith("{"):
