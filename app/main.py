@@ -13,6 +13,7 @@ Application Architecture:
 
 Current Features:
 - Conversation management API
+- HubSpot CSV import system
 - Automatic API documentation at /docs
 - Health check endpoint
 - CORS support (can be added as needed)
@@ -29,12 +30,19 @@ Last Modified: 2024
 """
 
 from fastapi import FastAPI
-from app.routers import conversation
+from app.routers import (
+    conversation, 
+    hubspot_company, 
+    hubspot_property, 
+    hubspot_property_manager,
+    auth
+)
+from datetime import datetime, timezone
 
 # Create FastAPI application instance with metadata
 app = FastAPI(
     title="Property Management Chatbot API",
-    description="REST API for managing chatbot conversations and lead qualification in property management",
+    description="REST API for managing chatbot conversations, lead qualification, and HubSpot data synchronization",
     version="1.0.0",
     docs_url="/docs",      # Swagger UI documentation
     redoc_url="/redoc",    # ReDoc documentation
@@ -49,36 +57,60 @@ app.include_router(
     tags=["conversations"]  # Groups endpoints in documentation
 )
 
+# Include HubSpot import routers
+app.include_router(
+    hubspot_company.router,
+    prefix="/api/v1/hubspot/import",
+    tags=["hubspot-company-import"]
+)
+
+app.include_router(
+    hubspot_property.router,
+    prefix="/api/v1/hubspot/import", 
+    tags=["hubspot-property-import"]
+)
+
+app.include_router(
+    hubspot_property_manager.router,
+    prefix="/api/v1/hubspot/import",
+    tags=["hubspot-manager-import"]
+)
+
+# Include authentication router
+app.include_router(auth.router, prefix="/api", tags=["Authentication"])
+
 # Future router inclusions (uncomment as needed):
 # app.include_router(user.router, prefix="/api/v1", tags=["users"])
 # app.include_router(chatbot.router, prefix="/api/v1", tags=["chatbots"])
 
 # Root endpoint for API health check and basic information
-@app.get("/", tags=["health"])
-async def root():
+@app.get("/health")
+async def health_check():
     """
-    API Health Check and Information Endpoint
+    Health check endpoint
     
-    This endpoint provides basic information about the API and can be used
-    for health checks by load balancers and monitoring systems.
-    
-    Returns:
-        dict: API information including name, version, and status
-        
-    Example Response:
-        {
-            "message": "Property Management Chatbot API",
-            "version": "1.0.0",
-            "status": "healthy",
-            "docs_url": "/docs"
-        }
+    Returns the current status of the API and basic information.
+    Used by monitoring systems and load balancers.
     """
     return {
-        "message": "Property Management Chatbot API",
-        "version": "1.0.0",
         "status": "healthy",
         "docs_url": "/docs",
-        "description": "REST API for managing chatbot conversations and lead qualification"
+        "description": "REST API for managing chatbot conversations, lead qualification, and HubSpot data synchronization",
+        "features": [
+            "Conversation Management",
+            "Lead Qualification", 
+            "HubSpot CSV Import",
+            "User Management",
+            "Chatbot Configuration"
+        ],
+        "endpoints": {
+            "conversations": "/conversations/",
+            "hubspot_companies": "/api/v1/hubspot/import/companies/",
+            "hubspot_properties": "/api/v1/hubspot/import/properties/",
+            "hubspot_managers": "/api/v1/hubspot/import/property-managers/",
+            "auth_verify": "/api/auth/verify-manager",
+            "documentation": "/docs"
+        }
     }
 
 # Optional: Add startup and shutdown event handlers
