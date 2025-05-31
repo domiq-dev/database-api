@@ -12,7 +12,7 @@ from tools.db_tool import WRITE_LEAD_TOOL, write_lead_record
 
 # ── OpenAI v1 client + model name ──────────────────────────────────────────
 client = openai.OpenAI()          # reads OPENAI_API_KEY from env
-MODEL  = "o4-mini"                # change if you use another model
+MODEL  = "gpt-4.1-2025-04-14"                # change if you use another model
 
 # ── Your ORIGINAL long prompt goes here ───────────────────────────────────
 SYSTEM_INSTRUCTIONS = """
@@ -112,7 +112,7 @@ SYSTEM_INSTRUCTIONS = """
        "num_occupants","pq_completed","tour_slot",
        "contact_email","contact_phone"]
 
-    Trigger `write_lead_record(current_data)` **once** when:
+    Trigger `write_lead_record(record: dict)` **once** when:
       • `end_signal` == true OR
       • every required field is non‑null.
 
@@ -123,7 +123,11 @@ SYSTEM_INSTRUCTIONS = """
     ----------------------------------------------------------------------
       write_lead_record(record: dict) -> None
 
-    It is provided by the runtime.  Do not import or redefine it.
+    IMPORTANT: When calling this function, you must pass the data directly as the record parameter,
+    not nested inside another object. For example:
+    
+    CORRECT: write_lead_record({"prospect_name": "John", "desired_bedrooms": 2, ...})
+    INCORRECT: write_lead_record({"record": {"prospect_name": "John", ...}})
 
     ----------------------------------------------------------------------
     7. PROHIBITIONS
@@ -170,22 +174,66 @@ def process_turn(conversation_id: str,
         })}
     ]
 
-    rsp = client.chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        tools=[WRITE_LEAD_TOOL],
-        tool_choice="auto"
-    )
-    msg = rsp.choices[0].message
+    try:
+        rsp = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            tools=[WRITE_LEAD_TOOL],
+            tool_choice="auto"
+        )
+        msg = rsp.choices[0].message
+    except Exception as e:
+        print(f"Error calling OpenAI API in helper: {e}")
+        return current_data, False
 
     # ── CASE A: the model called write_lead_record() ───────────────────────
     if msg.tool_calls:
         for call in msg.tool_calls:
             if call.function.name == "write_lead_record":
-                args = json.loads(call.function.arguments)
-                write_lead_record(args["record"])
-                current_data.update(args["record"])   # keep cache fresh
-                return current_data, True             # done
+                try:
+                    args = json.loads(call.function.arguments)
+                    print(f"Tool call arguments: {args}")  # Debug logging
+                    
+                    # Handle different possible argument structures
+                    if "record" in args:
+                        # If the LLM wrapped it in a "record" key
+                        record_data = args["record"]
+                    elif isinstance(args, dict) and len(args) > 0:
+                        # If the LLM passed the data directly
+                        # Check if it looks like lead data (has expected fields)
+                        expected_fields = ["prospect_name", "desired_bedrooms", "move_in_date"]
+                        if any(field in args for field in expected_fields):
+                            record_data = args
+                        else:
+                            # If it's wrapped in another way, try to find the actual data
+                            # Look for the first dict value that contains lead fields
+                            record_data = None
+                            for key, value in args.items():
+                                if isinstance(value, dict) and any(field in value for field in expected_fields):
+                                    record_data = value
+                                    break
+                            
+                            if record_data is None:
+                                print(f"Warning: Could not find valid lead data in tool call arguments: {args}")
+                                continue
+                    else:
+                        print(f"Warning: Unexpected tool call arguments structure: {args}")
+                        continue
+                    
+                    # Call the write function with the extracted data
+                    write_lead_record(record_data)
+                    current_data.update(record_data)   # keep cache fresh
+                    return current_data, True          # done
+                    
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing tool call arguments: {e}")
+                    print(f"Raw arguments: {call.function.arguments}")
+                except KeyError as e:
+                    print(f"KeyError in tool call: {e}")
+                    print(f"Arguments structure: {args}")
+                except Exception as e:
+                    print(f"Unexpected error processing tool call: {e}")
+                    print(f"Call details: {call}")
         # if some other unexpected tool, ignore and fall through
 
     # ── CASE B: the model emitted JSON as text ─────────────────────────────
