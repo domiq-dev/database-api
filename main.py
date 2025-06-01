@@ -12,6 +12,7 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime
+import asyncio
 
 # Load environment variables and initialize OpenAI client
 load_dotenv()
@@ -24,6 +25,8 @@ import agents.ava as ava_agent
 from tools import faq_tool
 from tools.preq_tool import begin_prequalification, complete_prequalification
 from analytics import init_analytics, track
+from config.database import init_db, close_db
+from services.db_service import db_service
 
 # Initialize FastAPI application
 app = FastAPI(title="Ava Leasing Chatbot")
@@ -193,7 +196,7 @@ def generate_ai_intent_summary(history: list) -> str:
 SENTENCE_ENDINGS = re.compile(r'([.?!])')
 
 # Function to generate and send AI summary
-def generate_and_send_summary(conversation_id):
+async def generate_and_send_summary(conversation_id):
     try:
         # Get conversation data with minimal lock time
         with conversations_lock:
@@ -267,6 +270,36 @@ def generate_and_send_summary(conversation_id):
         print("Structured API Response:")
         print(json.dumps(api_response, indent=2))
         
+        # 🔥 NEW: Save conversation data to database
+        try:
+            # Extract relevant data for database persistence
+            is_qualified = summary_data["qualified"] == "Yes"
+            kb_pending = data.get("kb_pending")  # Unanswered question that triggered fallback
+            
+            print(f"💾 Saving conversation {conversation_id} to database...")
+            print(f"   - AI Intent Summary: {ai_intent_summary[:100]}...")
+            print(f"   - Is Qualified: {is_qualified}")
+            print(f"   - KB Pending: {kb_pending}")
+            
+            # Save conversation and unanswered question to database
+            db_success = await db_service.save_conversation_with_unanswered_question(
+                conversation_id=conversation_id,
+                ai_intent_summary=ai_intent_summary,
+                is_qualified=is_qualified,
+                kb_pending=kb_pending,
+                source="LLM",
+                status="completed"
+            )
+            
+            if db_success:
+                print(f"✅ Successfully saved conversation {conversation_id} to database")
+            else:
+                print(f"❌ Failed to save conversation {conversation_id} to database")
+                
+        except Exception as db_error:
+            print(f"🚨 Database error for conversation {conversation_id}: {str(db_error)}")
+            # Don't fail the whole operation due to database issues
+        
         # Store summary in conversation data and mark as generated
         with conversations_lock:
             if conversation_id in conversations:
@@ -282,7 +315,7 @@ def generate_and_send_summary(conversation_id):
                 del conversations[conversation_id]
 
 # Function to check inactive conversations
-def check_inactive_conversations():
+async def check_inactive_conversations():
     try:
         current_time = time.time()
         inactive_conversations = []
@@ -305,7 +338,7 @@ def check_inactive_conversations():
         for conversation_id in inactive_conversations:
             try:
                 print(f"Generating summary for inactive conversation: {conversation_id}")
-                generate_and_send_summary(conversation_id)
+                await generate_and_send_summary(conversation_id)
             except Exception as e:
                 print(f"Error processing inactive conversation {conversation_id}: {e}")
                 # Remove problematic conversation to prevent repeated errors
@@ -316,17 +349,37 @@ def check_inactive_conversations():
     except Exception as e:
         print(f"Error in check_inactive_conversations: {e}")
 
+# Wrapper function for background scheduler (since APScheduler doesn't handle async well)
+def check_inactive_conversations_sync():
+    """Synchronous wrapper for the async check_inactive_conversations function"""
+    try:
+        # Create new event loop for this thread if one doesn't exist
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        loop.run_until_complete(check_inactive_conversations())
+    except Exception as e:
+        print(f"Error in check_inactive_conversations_sync: {e}")
+
 # Startup and shutdown events for scheduler
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     # Initialize Amplitude analytics
     init_analytics()
     print("Amplitude analytics initialized")
     
+    # Initialize database connection
+    await init_db()
+    print("Database connection initialized")
+    
     scheduler = BackgroundScheduler()
     # Add job with max_instances=1 and replace_existing=True to prevent overlap
     scheduler.add_job(
-        check_inactive_conversations, 
+        check_inactive_conversations_sync, 
         IntervalTrigger(minutes=1),
         id='check_inactive_conversations',
         max_instances=1,
@@ -338,10 +391,14 @@ def startup_event():
     print("Background scheduler started")
 
 @app.on_event("shutdown")
-def shutdown_event():
+async def shutdown_event():
     if hasattr(app, 'scheduler'):
         app.scheduler.shutdown(wait=False)  # Don't wait for jobs to complete
         print("Background scheduler stopped")
+    
+    # Close database connection
+    await close_db()
+    print("Database connection closed")
 
 # Helper function to extract tracking info from request
 def get_tracking_info(req: ChatRequest, request: Request = None):
