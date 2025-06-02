@@ -35,7 +35,8 @@ from app.routers import (
     hubspot_company, 
     hubspot_property, 
     hubspot_property_manager,
-    auth
+    auth,
+    leads  # Add the new leads router
 )
 from datetime import datetime, timezone
 
@@ -78,6 +79,13 @@ app.include_router(
 
 # Include authentication router
 app.include_router(auth.router, prefix="/api", tags=["Authentication"])
+
+# Add the new leads router
+app.include_router(
+    leads.router,
+    prefix="/api",
+    tags=["leads"]
+)
 
 # Future router inclusions (uncomment as needed):
 # app.include_router(user.router, prefix="/api/v1", tags=["users"])

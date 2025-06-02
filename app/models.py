@@ -220,7 +220,7 @@ class Conversation(Base):
     
     # Tour information
     tour_type = Column(String(50), nullable=True, comment="Type of tour requested")
-    tour_datetime = Column(DateTime(timezone=False), nullable=True, comment="Requested tour date and time")
+    tour_datetime = Column(DateTime(timezone=True), nullable=True, comment="Requested tour date and time")
     
     # AI insights
     ai_intent_summary = Column(Text, nullable=True, comment="AI-generated summary of user's intent")

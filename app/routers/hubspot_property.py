@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db import get_db
-from app.models import Property, Company
+from app.models import Property, Company, Chatbot
 import csv
 import uuid
 import io
@@ -177,10 +177,23 @@ class PropertyCSVProcessor:
         return result.scalar_one_or_none()
     
     async def _create_property(self, property_data: Dict[str, Any]):
-        """Create new property record"""
+        """Create new property record and auto-create chatbot"""
         property_obj = Property(**property_data)
         self.db.add(property_obj)
+        await self.db.flush()  # Get property ID
+        
+        # AUTO-CREATE CHATBOT for this property
+        chatbot = Chatbot(
+            id=str(uuid.uuid4()),
+            name=f"{property_obj.name} Chatbot",
+            property_id=property_obj.id,
+            is_active=True,
+            welcome_message=f"Hi! I'm here to help you learn about {property_obj.name}. What would you like to know?"
+        )
+        self.db.add(chatbot)
         await self.db.flush()
+        
+        print(f"  🤖 Auto-created chatbot: {chatbot.id}")
     
     async def _update_property(self, existing_property: Property, property_data: Dict[str, Any]):
         """Update existing property record"""
